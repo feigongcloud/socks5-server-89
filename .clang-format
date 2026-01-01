@@ -2,7 +2,6 @@
 # SOCKS5 Server Code Style
 # Based on Linux kernel style with minor adjustments
 
-Language: C
 BasedOnStyle: LLVM
 
 # Indentation
