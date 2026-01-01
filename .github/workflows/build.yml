@@ -1,0 +1,63 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-linux:
+    name: Linux (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: make CC=${{ matrix.cc }}
+
+      - name: Test binary
+        run: ./socks5-server --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: socks5-server-linux-${{ matrix.cc }}
+          path: socks5-server
+
+  build-macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: make
+
+      - name: Test binary
+        run: ./socks5-server --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: socks5-server-macos
+          path: socks5-server
+
+  format-check:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: sudo apt-get install -y clang-format
+
+      - name: Check formatting
+        run: |
+          find src include -name '*.c' -o -name '*.h' | xargs clang-format --dry-run --Werror
