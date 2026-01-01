@@ -6,6 +6,9 @@ CC       ?= gcc
 CFLAGS   ?= -Wall -Wextra -O2 -g
 LDFLAGS  ?= -lpthread
 
+# clang-format (prefer versioned, fallback to generic)
+CLANG_FORMAT := $(shell command -v clang-format-14 2>/dev/null || command -v clang-format 2>/dev/null)
+
 # Directories
 SRCDIR   := src
 INCDIR   := include
@@ -66,14 +69,14 @@ uninstall:
 
 # Format code
 format:
-	@command -v clang-format >/dev/null 2>&1 || { echo "clang-format not found"; exit 1; }
-	find $(SRCDIR) $(INCDIR) -name '*.c' -o -name '*.h' | xargs clang-format -i
-	@echo "Code formatted"
+	@test -n "$(CLANG_FORMAT)" || { echo "clang-format not found"; exit 1; }
+	find $(SRCDIR) $(INCDIR) -name '*.c' -o -name '*.h' | xargs $(CLANG_FORMAT) -i
+	@echo "Code formatted with $(CLANG_FORMAT)"
 
 # Check format (for CI)
 format-check:
-	@command -v clang-format >/dev/null 2>&1 || { echo "clang-format not found"; exit 1; }
-	find $(SRCDIR) $(INCDIR) -name '*.c' -o -name '*.h' | xargs clang-format --dry-run --Werror
+	@test -n "$(CLANG_FORMAT)" || { echo "clang-format not found"; exit 1; }
+	find $(SRCDIR) $(INCDIR) -name '*.c' -o -name '*.h' | xargs $(CLANG_FORMAT) --dry-run --Werror
 
 # Help
 help:

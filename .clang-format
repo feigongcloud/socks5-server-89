@@ -1,71 +1,18 @@
 ---
 # SOCKS5 Server Code Style
-# Based on Linux kernel style with minor adjustments
+# Compatible with clang-format 10+
 
 BasedOnStyle: LLVM
-
-# Indentation
 IndentWidth: 4
 TabWidth: 4
 UseTab: Never
-IndentCaseLabels: false
-IndentGotoLabels: false
-
-# Braces
-BreakBeforeBraces: Linux
-AllowShortBlocksOnASingleLine: Empty
-AllowShortFunctionsOnASingleLine: Empty
-AllowShortIfStatementsOnASingleLine: Never
-AllowShortLoopsOnASingleLine: false
-
-# Line width
 ColumnLimit: 100
-
-# Alignment
-AlignAfterOpenBracket: Align
-AlignConsecutiveAssignments: false
-AlignConsecutiveDeclarations: false
-AlignConsecutiveMacros: true
-AlignEscapedNewlines: Left
-AlignOperands: true
-AlignTrailingComments: true
-
-# Pointer alignment
+BreakBeforeBraces: Linux
 PointerAlignment: Right
 DerivePointerAlignment: false
-
-# Spaces
-SpaceAfterCStyleCast: false
-SpaceBeforeAssignmentOperators: true
-SpaceBeforeParens: ControlStatements
-SpaceInEmptyParentheses: false
-SpacesInCStyleCastParentheses: false
-SpacesInParentheses: false
-SpacesInSquareBrackets: false
-
-# Breaking
-AllowAllParametersOfDeclarationOnNextLine: true
-BinPackArguments: true
-BinPackParameters: true
-BreakBeforeBinaryOperators: None
-BreakBeforeTernaryOperators: true
-
-# Includes
-IncludeBlocks: Preserve
 SortIncludes: false
-
-# Other
-ReflowComments: true
-SpacesBeforeTrailingComments: 1
-MaxEmptyLinesToKeep: 1
-KeepEmptyLinesAtTheStartOfBlocks: false
-
-# Penalties
-PenaltyBreakAssignment: 10
-PenaltyBreakBeforeFirstCallParameter: 30
-PenaltyBreakComment: 10
-PenaltyBreakFirstLessLess: 0
-PenaltyBreakString: 10
-PenaltyExcessCharacter: 100
-PenaltyReturnTypeOnItsOwnLine: 60
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+IndentCaseLabels: false
+SpaceBeforeParens: ControlStatements
 ...
