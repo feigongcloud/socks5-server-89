@@ -6,9 +6,6 @@ CC       ?= gcc
 CFLAGS   ?= -Wall -Wextra -O2 -g
 LDFLAGS  ?= -lpthread
 
-# clang-format (prefer versioned, fallback to generic)
-CLANG_FORMAT := $(shell command -v clang-format-14 2>/dev/null || command -v clang-format 2>/dev/null)
-
 # Directories
 SRCDIR   := src
 INCDIR   := include
@@ -26,7 +23,7 @@ DEPS     := $(OBJS:.o=.d)
 CFLAGS   += -I$(INCDIR)
 
 # Phony targets
-.PHONY: all clean install uninstall distclean format format-check help
+.PHONY: all clean install uninstall distclean help
 
 # Default target
 all: $(TARGET)
@@ -67,17 +64,6 @@ uninstall:
 	rm -f $(DESTDIR)/usr/local/bin/$(TARGET)
 	rm -rf $(DESTDIR)/etc/socks5-server
 
-# Format code
-format:
-	@test -n "$(CLANG_FORMAT)" || { echo "clang-format not found"; exit 1; }
-	find $(SRCDIR) $(INCDIR) -name '*.c' -o -name '*.h' | xargs $(CLANG_FORMAT) -i
-	@echo "Code formatted with $(CLANG_FORMAT)"
-
-# Check format (for CI)
-format-check:
-	@test -n "$(CLANG_FORMAT)" || { echo "clang-format not found"; exit 1; }
-	find $(SRCDIR) $(INCDIR) -name '*.c' -o -name '*.h' | xargs $(CLANG_FORMAT) --dry-run --Werror
-
 # Help
 help:
 	@echo "SOCKS5 Server Build System"
@@ -88,8 +74,6 @@ help:
 	@echo "  distclean    - Remove all generated files"
 	@echo "  install      - Install to system"
 	@echo "  uninstall    - Remove from system"
-	@echo "  format       - Format code with clang-format"
-	@echo "  format-check - Check code formatting (CI)"
 	@echo ""
 	@echo "Variables:"
 	@echo "  CC         - C compiler (default: gcc)"

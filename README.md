@@ -100,30 +100,16 @@ verbose=false
 
 ## Development
 
-### Code Formatting
-
-The project uses clang-format for consistent code style:
-
-```bash
-# Format all source files
-make format
-
-# Check formatting (used in CI)
-make format-check
-```
-
 ### Continuous Integration
 
 GitHub Actions workflow runs on every push/PR:
 - Builds with GCC and Clang on Linux
 - Builds on macOS
-- Checks code formatting
 
 ## Project Structure
 
 ```
 socks5-server/
-├── .clang-format         # Code style configuration
 ├── .github/
 │   └── workflows/
 │       └── build.yml     # CI workflow
