@@ -8,24 +8,41 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include "socks5_server.h"
+#include "util.h"
 #include "log.h"
 
-#define MAX_CLIENTS 1024
-
 static int server_fd = -1;
-static volatile int running = 0;
+static atomic_int running = 0;
+static atomic_int active_connections = 0;
 static Socks5Config *g_config = NULL;
 
 /* Check if server is running */
 int socks5_server_is_running(void)
 {
-    return running;
+    return atomic_load(&running);
+}
+
+/* Connection tracking */
+int socks5_connection_count(void)
+{
+    return atomic_load(&active_connections);
+}
+
+void socks5_connection_inc(void)
+{
+    atomic_fetch_add(&active_connections, 1);
+}
+
+void socks5_connection_dec(void)
+{
+    atomic_fetch_sub(&active_connections, 1);
 }
 
 /* Initialize server */
@@ -90,15 +107,18 @@ int socks5_server_init(Socks5Config *config)
             log_info("Upstream auth: user=%s", config->upstream.username);
     }
 
+    log_info("Max connections: %d, Socket timeout: %ds, Connect timeout: %ds",
+             MAX_CONNECTIONS, SOCKET_TIMEOUT_SEC, CONNECT_TIMEOUT_SEC);
+
     return 0;
 }
 
 /* Run server main loop */
 int socks5_server_run(void)
 {
-    running = 1;
+    atomic_store(&running, 1);
 
-    while (running) {
+    while (atomic_load(&running)) {
         struct sockaddr_storage client_addr;
         socklen_t client_len = sizeof(client_addr);
         int client_fd;
@@ -109,9 +129,22 @@ int socks5_server_run(void)
         if (client_fd < 0) {
             if (errno == EINTR)
                 continue;
+            if (!atomic_load(&running))
+                break;  /* Server stopped */
             log_error("accept: %s", strerror(errno));
             continue;
         }
+
+        /* Check connection limit */
+        if (atomic_load(&active_connections) >= MAX_CONNECTIONS) {
+            log_error("Connection limit reached (%d), rejecting", MAX_CONNECTIONS);
+            close(client_fd);
+            continue;
+        }
+
+        /* Set socket timeout and keepalive */
+        socket_set_timeout(client_fd, SOCKET_TIMEOUT_SEC);
+        socket_set_keepalive(client_fd);
 
         sess = calloc(1, sizeof(Socks5Session));
         if (!sess) {
@@ -126,8 +159,12 @@ int socks5_server_run(void)
         sess->client_addr_len = client_len;
         sess->config = g_config;
 
+        /* Increment connection count before creating thread */
+        socks5_connection_inc();
+
         if (pthread_create(&tid, NULL, socks5_session_handler, sess) != 0) {
             log_error("pthread_create: %s", strerror(errno));
+            socks5_connection_dec();
             close(client_fd);
             free(sess);
             continue;
@@ -142,9 +179,12 @@ int socks5_server_run(void)
 /* Stop server */
 void socks5_server_stop(void)
 {
-    running = 0;
+    atomic_store(&running, 0);
     if (server_fd >= 0) {
+        /* Shutdown to wake up accept() */
+        shutdown(server_fd, SHUT_RDWR);
         close(server_fd);
         server_fd = -1;
     }
+    log_info("Server stopped (active connections: %d)", atomic_load(&active_connections));
 }

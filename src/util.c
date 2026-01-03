@@ -7,8 +7,11 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 
 #include "util.h"
 #include "socks5_proto.h"
@@ -29,9 +32,10 @@ ssize_t read_exact(int fd, void *buf, size_t n)
     while (total < n) {
         ssize_t r = read(fd, (char *)buf + total, n - total);
         if (r <= 0) {
-            if (r < 0 && (errno == EINTR || errno == EAGAIN))
+            if (r < 0 && errno == EINTR)
                 continue;
-            return r;
+            /* EAGAIN/EWOULDBLOCK means timeout (with SO_RCVTIMEO) */
+            return r == 0 ? 0 : -1;
         }
         total += r;
     }
@@ -45,9 +49,9 @@ ssize_t write_exact(int fd, const void *buf, size_t n)
     while (total < n) {
         ssize_t w = write(fd, (const char *)buf + total, n - total);
         if (w <= 0) {
-            if (w < 0 && (errno == EINTR || errno == EAGAIN))
+            if (w < 0 && errno == EINTR)
                 continue;
-            return w;
+            return w == 0 ? 0 : -1;
         }
         total += w;
     }
@@ -138,4 +142,111 @@ int resolve_addr(const Socks5Addr *addr, struct sockaddr_storage *ss,
     default:
         return -1;
     }
+}
+
+/* Set socket read/write timeout */
+int socket_set_timeout(int fd, int timeout_sec)
+{
+    struct timeval tv;
+    tv.tv_sec = timeout_sec;
+    tv.tv_usec = 0;
+
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0)
+        return -1;
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0)
+        return -1;
+
+    return 0;
+}
+
+/* Set TCP keepalive options */
+int socket_set_keepalive(int fd)
+{
+    int keepalive = 1;
+
+    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive)) < 0)
+        return -1;
+
+#ifdef TCP_KEEPIDLE
+    int keepidle = KEEPALIVE_IDLE_SEC;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
+#endif
+
+#ifdef TCP_KEEPINTVL
+    int keepintvl = KEEPALIVE_INTERVAL_SEC;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+#endif
+
+#ifdef TCP_KEEPCNT
+    int keepcnt = KEEPALIVE_COUNT;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
+#endif
+
+    return 0;
+}
+
+/* Connect with timeout */
+int connect_with_timeout(int family, int type, int protocol,
+                         const struct sockaddr *addr, socklen_t addrlen,
+                         int timeout_sec)
+{
+    int fd, flags, ret;
+    struct pollfd pfd;
+
+    fd = socket(family, type, protocol);
+    if (fd < 0)
+        return -1;
+
+    /* Set non-blocking */
+    flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) {
+        close(fd);
+        return -1;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    /* Start non-blocking connect */
+    ret = connect(fd, addr, addrlen);
+    if (ret < 0 && errno != EINPROGRESS) {
+        close(fd);
+        return -1;
+    }
+
+    if (ret == 0) {
+        /* Connected immediately */
+        goto connected;
+    }
+
+    /* Wait for connection with timeout */
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+
+    ret = poll(&pfd, 1, timeout_sec * 1000);
+    if (ret <= 0) {
+        /* Timeout or error */
+        close(fd);
+        errno = ret == 0 ? ETIMEDOUT : errno;
+        return -1;
+    }
+
+    /* Check for connection error */
+    int error = 0;
+    socklen_t errlen = sizeof(error);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &errlen) < 0 || error != 0) {
+        close(fd);
+        errno = error ? error : ECONNREFUSED;
+        return -1;
+    }
+
+connected:
+    /* Restore blocking mode */
+    if (fcntl(fd, F_SETFL, flags) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    return fd;
 }

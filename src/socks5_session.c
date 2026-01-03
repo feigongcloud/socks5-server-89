@@ -236,24 +236,20 @@ static int connect_upstream(UpstreamConfig *upstream)
     int fd;
     uint8_t buf[512];
 
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        log_error("upstream socket: %s", strerror(errno));
-        return -1;
-    }
-
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
     sin.sin_port = htons(upstream->port);
     if (inet_pton(AF_INET, upstream->addr, &sin.sin_addr) <= 0) {
         log_error("Invalid upstream address: %s", upstream->addr);
-        close(fd);
         return -1;
     }
 
-    if (connect(fd, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
+    /* Connect with timeout */
+    fd = connect_with_timeout(AF_INET, SOCK_STREAM, 0,
+                              (struct sockaddr *)&sin, sizeof(sin),
+                              CONNECT_TIMEOUT_SEC);
+    if (fd < 0) {
         log_error("upstream connect: %s", strerror(errno));
-        close(fd);
         return -1;
     }
 
@@ -443,6 +439,10 @@ static int handle_connect(Socks5Session *sess, const Socks5Addr *addr)
             return -1;
         }
 
+        /* Set timeout and keepalive on upstream connection */
+        socket_set_timeout(remote_fd, SOCKET_TIMEOUT_SEC);
+        socket_set_keepalive(remote_fd);
+
         /* Send CONNECT request to upstream */
         if (upstream_connect(remote_fd, addr) < 0) {
             close(remote_fd);
@@ -479,19 +479,19 @@ static int handle_connect(Socks5Session *sess, const Socks5Addr *addr)
         return -1;
     }
 
-    remote_fd = socket(ss.ss_family, SOCK_STREAM, 0);
+    /* Connect with timeout */
+    remote_fd = connect_with_timeout(ss.ss_family, SOCK_STREAM, 0,
+                                     (struct sockaddr *)&ss, ss_len,
+                                     CONNECT_TIMEOUT_SEC);
     if (remote_fd < 0) {
-        log_error("socket: %s", strerror(errno));
-        send_reply(sess->client_fd, SOCKS5_REP_GENERAL_ERR, NULL);
-        return -1;
-    }
-
-    if (connect(remote_fd, (struct sockaddr *)&ss, ss_len) < 0) {
         log_error("connect: %s", strerror(errno));
-        close(remote_fd);
         send_reply(sess->client_fd, SOCKS5_REP_HOST_UNREACH, NULL);
         return -1;
     }
+
+    /* Set timeout and keepalive on remote connection */
+    socket_set_timeout(remote_fd, SOCKET_TIMEOUT_SEC);
+    socket_set_keepalive(remote_fd);
 
     sess->remote_fd = remote_fd;
 
@@ -1098,5 +1098,9 @@ cleanup:
         close(sess->udp_fd);
 
     free(sess);
+
+    /* Decrement active connection count */
+    socks5_connection_dec();
+
     return NULL;
 }

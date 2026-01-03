@@ -11,6 +11,9 @@
 
 #include "config.h"
 
+/* Connection limits */
+#define MAX_CONNECTIONS 1024
+
 /* Client session */
 typedef struct {
     int client_fd;
@@ -29,6 +32,11 @@ void socks5_server_stop(void);
 
 /* Check if server is running */
 int socks5_server_is_running(void);
+
+/* Connection tracking */
+int socks5_connection_count(void);
+void socks5_connection_inc(void);
+void socks5_connection_dec(void);
 
 /* Session handler (called in separate thread) */
 void *socks5_session_handler(void *arg);
