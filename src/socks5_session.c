@@ -596,18 +596,47 @@ static int handle_udp_associate(Socks5Session *sess, const Socks5Addr *addr)
         return -1;
     }
 
-    /* Bind to any available port */
+    /* Enable SO_REUSEADDR for faster port reuse after close */
+    int opt = 1;
+    setsockopt(udp_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    /* Bind UDP socket */
     struct sockaddr_in sin;
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
     sin.sin_addr.s_addr = INADDR_ANY;
-    sin.sin_port = 0;
 
-    if (bind(udp_fd, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
-        log_error("bind: %s", strerror(errno));
-        close(udp_fd);
-        send_reply(sess->client_fd, SOCKS5_REP_GENERAL_ERR, NULL);
-        return -1;
+    if (sess->config->udp_port_min > 0) {
+        /* Try ports in configured range */
+        uint16_t port;
+        int bound = 0;
+        int last_errno = 0;
+        for (port = sess->config->udp_port_min;
+             port <= sess->config->udp_port_max; port++) {
+            sin.sin_port = htons(port);
+            if (bind(udp_fd, (struct sockaddr *)&sin, sizeof(sin)) == 0) {
+                bound = 1;
+                break;
+            }
+            last_errno = errno;
+        }
+        if (!bound) {
+            log_error("No available port in range %d-%d (last error: %s)",
+                      sess->config->udp_port_min, sess->config->udp_port_max,
+                      strerror(last_errno));
+            close(udp_fd);
+            send_reply(sess->client_fd, SOCKS5_REP_GENERAL_ERR, NULL);
+            return -1;
+        }
+    } else {
+        /* Use any available port (original behavior) */
+        sin.sin_port = 0;
+        if (bind(udp_fd, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
+            log_error("bind: %s", strerror(errno));
+            close(udp_fd);
+            send_reply(sess->client_fd, SOCKS5_REP_GENERAL_ERR, NULL);
+            return -1;
+        }
     }
 
     getsockname(udp_fd, (struct sockaddr *)&bind_addr, &bind_len);
@@ -680,11 +709,22 @@ static int handle_udp_associate(Socks5Session *sess, const Socks5Addr *addr)
         if (ret == 0)
             continue;
 
-        /* TCP connection closed = end UDP session */
-        if (fds[0].revents & (POLLIN | POLLERR | POLLHUP)) {
-            char tmp[1];
-            if (recv(sess->client_fd, tmp, 1, MSG_PEEK) <= 0)
+        /* TCP connection closed or error = end UDP session */
+        if (fds[0].revents & (POLLERR | POLLHUP)) {
+            break;
+        }
+        if (fds[0].revents & POLLIN) {
+            /* Unexpected data on TCP - drain and check for close */
+            char tmp[256];
+            ssize_t r = recv(sess->client_fd, tmp, sizeof(tmp), MSG_DONTWAIT);
+            if (r <= 0)
                 break;
+            /* Continue if there was data (shouldn't happen normally) */
+        }
+
+        /* UDP socket error */
+        if (fds[udp_fd_idx].revents & POLLERR) {
+            break;
         }
 
         /* UDP packet from client -> forward to destination */
@@ -694,60 +734,64 @@ static int handle_udp_associate(Socks5Session *sess, const Socks5Addr *addr)
 
             ssize_t n = recvfrom(udp_fd, buf, sizeof(buf), 0,
                                  (struct sockaddr *)&from, &from_len);
-            if (n > 0) {
-                /* Decrypt received UDP data */
-                bufxor(buf, n);
+            if (n <= 0) {
+                if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                    continue;
+                /* Error or unexpected close */
+                break;
+            }
+            /* Decrypt received UDP data */
+            bufxor(buf, n);
 
-                /* Parse SOCKS5 UDP header */
-                if (n >= 4) {
-                    Socks5UdpHdr *hdr = (Socks5UdpHdr *)buf;
-                    if (hdr->frag == 0) {
-                        int addr_len = socks5_addr_len(&hdr->addr);
-                        int hdr_len = 3 + addr_len;
+            /* Parse SOCKS5 UDP header */
+            if (n >= 4) {
+                Socks5UdpHdr *hdr = (Socks5UdpHdr *)buf;
+                if (hdr->frag == 0) {
+                    int addr_len = socks5_addr_len(&hdr->addr);
+                    int hdr_len = 3 + addr_len;
 
-                        if (addr_len > 0 && n >= hdr_len) {
-                            struct sockaddr_storage dest;
-                            socklen_t dest_len;
+                    if (addr_len > 0 && n >= hdr_len) {
+                        struct sockaddr_storage dest;
+                        socklen_t dest_len;
 
-                            if (resolve_addr(&hdr->addr, &dest, &dest_len) == 0) {
-                                /* Find or create NAT entry */
-                                int idx = nat_find_by_dest(nat_table, UDP_NAT_MAX_ENTRIES,
-                                                           &dest, dest_len);
+                        if (resolve_addr(&hdr->addr, &dest, &dest_len) == 0) {
+                            /* Find or create NAT entry */
+                            int idx = nat_find_by_dest(nat_table, UDP_NAT_MAX_ENTRIES,
+                                                       &dest, dest_len);
 
-                                if (idx < 0) {
-                                    /* Create new NAT entry */
-                                    idx = nat_find_free(nat_table, UDP_NAT_MAX_ENTRIES, now);
-                                    if (idx >= 0) {
-                                        int fwd_fd = socket(dest.ss_family, SOCK_DGRAM, 0);
-                                        if (fwd_fd >= 0) {
-                                            if (connect(fwd_fd, (struct sockaddr *)&dest,
-                                                        dest_len) == 0) {
-                                                nat_table[idx].fd = fwd_fd;
-                                                memcpy(&nat_table[idx].dest_addr, &dest, dest_len);
-                                                nat_table[idx].dest_len = dest_len;
-                                            } else {
-                                                close(fwd_fd);
-                                                idx = -1;
-                                            }
+                            if (idx < 0) {
+                                /* Create new NAT entry */
+                                idx = nat_find_free(nat_table, UDP_NAT_MAX_ENTRIES, now);
+                                if (idx >= 0) {
+                                    int fwd_fd = socket(dest.ss_family, SOCK_DGRAM, 0);
+                                    if (fwd_fd >= 0) {
+                                        if (connect(fwd_fd, (struct sockaddr *)&dest,
+                                                    dest_len) == 0) {
+                                            nat_table[idx].fd = fwd_fd;
+                                            memcpy(&nat_table[idx].dest_addr, &dest, dest_len);
+                                            nat_table[idx].dest_len = dest_len;
                                         } else {
+                                            close(fwd_fd);
                                             idx = -1;
                                         }
+                                    } else {
+                                        idx = -1;
                                     }
                                 }
+                            }
 
-                                if (idx >= 0) {
-                                    /* Update client address and timestamp */
-                                    memcpy(&nat_table[idx].client_addr, &from, from_len);
-                                    nat_table[idx].client_len = from_len;
-                                    nat_table[idx].last_active = now;
+                            if (idx >= 0) {
+                                /* Update client address and timestamp */
+                                memcpy(&nat_table[idx].client_addr, &from, from_len);
+                                nat_table[idx].client_len = from_len;
+                                nat_table[idx].last_active = now;
 
-                                    /* Forward payload to destination (non-blocking) */
-                                    send(nat_table[idx].fd, buf + hdr_len, n - hdr_len, MSG_DONTWAIT);
+                                /* Forward payload to destination (non-blocking) */
+                                send(nat_table[idx].fd, buf + hdr_len, n - hdr_len, MSG_DONTWAIT);
 
-                                    char addr_str[280];
-                                    format_addr(&hdr->addr, addr_str, sizeof(addr_str));
-                                    log_debug("UDP fwd: %zd bytes -> %s", n - hdr_len, addr_str);
-                                }
+                                char addr_str[280];
+                                format_addr(&hdr->addr, addr_str, sizeof(addr_str));
+                                log_debug("UDP fwd: %zd bytes -> %s", n - hdr_len, addr_str);
                             }
                         }
                     }
@@ -757,54 +801,68 @@ static int handle_udp_associate(Socks5Session *sess, const Socks5Addr *addr)
 
         /* Check all NAT forward sockets for incoming responses */
         for (int i = nat_fd_start; i < nfds; i++) {
+            int nat_idx = nat_find_by_fd(nat_table, UDP_NAT_MAX_ENTRIES, fds[i].fd);
+            if (nat_idx < 0)
+                continue;
+
+            /* Handle socket errors - close NAT entry */
+            if (fds[i].revents & POLLERR) {
+                close(nat_table[nat_idx].fd);
+                nat_table[nat_idx].fd = -1;
+                continue;
+            }
+
             if (fds[i].revents & POLLIN) {
-                int nat_idx = nat_find_by_fd(nat_table, UDP_NAT_MAX_ENTRIES, fds[i].fd);
-                if (nat_idx >= 0) {
-                    ssize_t n = recv(fds[i].fd, buf + 32, sizeof(buf) - 32, MSG_DONTWAIT);
-                    if (n > 0) {
-                        nat_table[nat_idx].last_active = now;
-
-                        /* Build UDP reply header */
-                        uint8_t reply[BUFFER_SIZE];
-                        int reply_len = 0;
-
-                        reply[reply_len++] = 0; /* RSV */
-                        reply[reply_len++] = 0; /* RSV */
-                        reply[reply_len++] = 0; /* FRAG */
-
-                        /* Add source address from NAT entry */
-                        struct sockaddr_storage *dest = &nat_table[nat_idx].dest_addr;
-                        if (dest->ss_family == AF_INET) {
-                            struct sockaddr_in *s = (struct sockaddr_in *)dest;
-                            reply[reply_len++] = SOCKS5_ATYPE_IPV4;
-                            memcpy(reply + reply_len, &s->sin_addr, 4);
-                            reply_len += 4;
-                            memcpy(reply + reply_len, &s->sin_port, 2);
-                            reply_len += 2;
-                        } else {
-                            struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)dest;
-                            reply[reply_len++] = SOCKS5_ATYPE_IPV6;
-                            memcpy(reply + reply_len, &s6->sin6_addr, 16);
-                            reply_len += 16;
-                            memcpy(reply + reply_len, &s6->sin6_port, 2);
-                            reply_len += 2;
-                        }
-
-                        /* Add payload */
-                        memcpy(reply + reply_len, buf + 32, n);
-                        reply_len += n;
-
-                        /* Encrypt before sending back */
-                        bufxor(reply, reply_len);
-
-                        /* Send back to client (non-blocking) */
-                        sendto(udp_fd, reply, reply_len, MSG_DONTWAIT,
-                               (struct sockaddr *)&nat_table[nat_idx].client_addr,
-                               nat_table[nat_idx].client_len);
-
-                        log_debug("UDP reply: %zd bytes <- NAT[%d]", n, nat_idx);
-                    }
+                ssize_t n = recv(fds[i].fd, buf + 32, sizeof(buf) - 32, MSG_DONTWAIT);
+                if (n <= 0) {
+                    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                        continue;
+                    /* Error - close NAT entry */
+                    close(nat_table[nat_idx].fd);
+                    nat_table[nat_idx].fd = -1;
+                    continue;
                 }
+                nat_table[nat_idx].last_active = now;
+
+                /* Build UDP reply header */
+                uint8_t reply[BUFFER_SIZE];
+                int reply_len = 0;
+
+                reply[reply_len++] = 0; /* RSV */
+                reply[reply_len++] = 0; /* RSV */
+                reply[reply_len++] = 0; /* FRAG */
+
+                /* Add source address from NAT entry */
+                struct sockaddr_storage *dest = &nat_table[nat_idx].dest_addr;
+                if (dest->ss_family == AF_INET) {
+                    struct sockaddr_in *s = (struct sockaddr_in *)dest;
+                    reply[reply_len++] = SOCKS5_ATYPE_IPV4;
+                    memcpy(reply + reply_len, &s->sin_addr, 4);
+                    reply_len += 4;
+                    memcpy(reply + reply_len, &s->sin_port, 2);
+                    reply_len += 2;
+                } else {
+                    struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)dest;
+                    reply[reply_len++] = SOCKS5_ATYPE_IPV6;
+                    memcpy(reply + reply_len, &s6->sin6_addr, 16);
+                    reply_len += 16;
+                    memcpy(reply + reply_len, &s6->sin6_port, 2);
+                    reply_len += 2;
+                }
+
+                /* Add payload */
+                memcpy(reply + reply_len, buf + 32, n);
+                reply_len += n;
+
+                /* Encrypt before sending back */
+                bufxor(reply, reply_len);
+
+                /* Send back to client (non-blocking) */
+                sendto(udp_fd, reply, reply_len, MSG_DONTWAIT,
+                       (struct sockaddr *)&nat_table[nat_idx].client_addr,
+                       nat_table[nat_idx].client_len);
+
+                log_debug("UDP reply: %zd bytes <- NAT[%d]", n, nat_idx);
             }
         }
     }

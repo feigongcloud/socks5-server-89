@@ -164,12 +164,24 @@ int main(int argc, char *argv[])
         config.upstream.port = file_cfg.upstream.port;
         config.upstream.username = file_cfg.upstream.username;
         config.upstream.password = file_cfg.upstream.password;
+
+        /* Copy UDP port range */
+        config.udp_port_min = file_cfg.udp_port_min;
+        config.udp_port_max = file_cfg.udp_port_max;
     }
 
     /* Validate auth config */
     if ((config.username && !config.password) ||
         (!config.username && config.password)) {
         fprintf(stderr, "Error: Both username and password must be provided\n");
+        if (use_file_config)
+            config_free(&file_cfg);
+        return 1;
+    }
+
+    /* Validate UDP port range */
+    if (config.udp_port_min > 0 && config.udp_port_max < config.udp_port_min) {
+        fprintf(stderr, "Error: udp_port_max must be >= udp_port_min\n");
         if (use_file_config)
             config_free(&file_cfg);
         return 1;

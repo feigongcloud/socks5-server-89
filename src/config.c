@@ -9,6 +9,10 @@
  *   password=demo123
  *   verbose=true
  *
+ *   # UDP port range for UDP ASSOCIATE (optional)
+ *   udp_port_min=10000
+ *   udp_port_max=10100
+ *
  *   # Upstream proxy (optional)
  *   upstream_enable=true
  *   upstream_addr=192.168.1.1
@@ -128,6 +132,10 @@ int config_load(const char *path, ServerConfig *cfg)
         } else if (strcmp(key, "upstream_pass") == 0) {
             free(cfg->upstream.password);
             cfg->upstream.password = strdup_safe(value);
+        } else if (strcmp(key, "udp_port_min") == 0) {
+            cfg->udp_port_min = atoi(value);
+        } else if (strcmp(key, "udp_port_max") == 0) {
+            cfg->udp_port_max = atoi(value);
         }
     }
 
