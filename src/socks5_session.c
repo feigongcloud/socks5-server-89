@@ -606,37 +606,15 @@ static int handle_udp_associate(Socks5Session *sess, const Socks5Addr *addr)
     sin.sin_family = AF_INET;
     sin.sin_addr.s_addr = INADDR_ANY;
 
-    if (sess->config->udp_port_min > 0) {
-        /* Try ports in configured range */
-        uint16_t port;
-        int bound = 0;
-        int last_errno = 0;
-        for (port = sess->config->udp_port_min;
-             port <= sess->config->udp_port_max; port++) {
-            sin.sin_port = htons(port);
-            if (bind(udp_fd, (struct sockaddr *)&sin, sizeof(sin)) == 0) {
-                bound = 1;
-                break;
-            }
-            last_errno = errno;
-        }
-        if (!bound) {
-            log_error("No available port in range %d-%d (last error: %s)",
-                      sess->config->udp_port_min, sess->config->udp_port_max,
-                      strerror(last_errno));
-            close(udp_fd);
-            send_reply(sess->client_fd, SOCKS5_REP_GENERAL_ERR, NULL);
-            return -1;
-        }
-    } else {
-        /* Use any available port (original behavior) */
-        sin.sin_port = 0;
-        if (bind(udp_fd, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
-            log_error("bind: %s", strerror(errno));
-            close(udp_fd);
-            send_reply(sess->client_fd, SOCKS5_REP_GENERAL_ERR, NULL);
-            return -1;
-        }
+    /* Set UDP port (0 = any available port) */
+    sin.sin_port = sess->config->udp_port > 0 ? htons(sess->config->udp_port) : 0;
+
+    if (bind(udp_fd, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
+        log_error("bind UDP port %d: %s",
+                  sess->config->udp_port, strerror(errno));
+        close(udp_fd);
+        send_reply(sess->client_fd, SOCKS5_REP_GENERAL_ERR, NULL);
+        return -1;
     }
 
     getsockname(udp_fd, (struct sockaddr *)&bind_addr, &bind_len);

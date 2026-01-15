@@ -25,8 +25,7 @@ typedef struct {
     char *username;
     char *password;
     bool verbose;
-    uint16_t udp_port_min;  /* 0 = disabled (use any port) */
-    uint16_t udp_port_max;
+    uint16_t udp_port;  /* 0 = use any available port */
     UpstreamConfig upstream;
 } ServerConfig;
 
@@ -39,8 +38,7 @@ typedef struct {
     const char *password;
     int max_clients;
     bool verbose;
-    uint16_t udp_port_min;  /* 0 = disabled (use any port) */
-    uint16_t udp_port_max;
+    uint16_t udp_port;  /* 0 = use any available port */
     UpstreamConfig upstream;
 } Socks5Config;
 
